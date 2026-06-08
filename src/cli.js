@@ -6,7 +6,7 @@ import config from '../config/default.js';
 import logger from './utils/logger.js';
 import { ensureDirectories, cleanTemp, cleanCache } from './utils/fileManager.js';
 import { printSummary } from './utils/progress.js';
-import { crawlChannel } from './crawler/rednote.js';
+import { crawlChannel, loginToRedNote } from './crawler/rednote.js';
 import { downloadVideo } from './downloader/index.js';
 import { processVideo, processChannel, loadPipelineState, savePipelineState } from './pipeline.js';
 import { translateSrt } from './translator/index.js';
@@ -392,6 +392,21 @@ program
 
     } catch (err) {
       logger.error(`Status check failed: ${err.message}`);
+      process.exit(1);
+    }
+  });
+
+// ─────────────────────────────────────────────────────────
+// login: Interactive browser login to save session
+// ─────────────────────────────────────────────────────────
+program
+  .command('login')
+  .description('Open a browser window to log in to RedNote. Session is saved for future headless use.')
+  .action(async () => {
+    try {
+      await loginToRedNote();
+    } catch (err) {
+      logger.error(`Login failed: ${err.message}`);
       process.exit(1);
     }
   });

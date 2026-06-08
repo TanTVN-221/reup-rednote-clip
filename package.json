@@ -22,7 +22,6 @@
   "license": "MIT",
   "dependencies": {
     "@google/genai": "^2.8.0",
-    "apify-client": "^2.23.4",
     "chalk": "^5.3.0",
     "commander": "^12.1.0",
     "dotenv": "^16.4.5",
@@ -32,6 +31,8 @@
     "node-edge-tts": "^1.2.10",
     "ora": "^8.0.1",
     "playwright": "^1.45.0",
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
     "srt-parser-2": "^1.2.3",
     "tesseract.js": "^5.1.0",
     "whisper-node": "^1.1.1"

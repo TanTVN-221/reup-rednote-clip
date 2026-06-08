@@ -28,11 +28,7 @@ const config = {
     cookie: process.env.REDNOTE_COOKIE || '',
   },
 
-  // Apify Configuration
-  apify: {
-    token: process.env.APIFY_TOKEN || '',
-    actorId: process.env.APIFY_ACTOR_ID || 'apple_yang/rednote-video-audio-downloader',
-  },
+
 
   // RedNote
   rednote_settings: {
@@ -89,8 +85,8 @@ const config = {
     outlineColor: process.env.SUBTITLE_OUTLINE_COLOR || 'black',
     position: process.env.SUBTITLE_POSITION || 'bottom',
     fontName: 'Arial',
-    outlineWidth: 0,
-    marginV: 30,             // vertical margin from bottom
+    outlineWidth: 0.5,
+    marginV: 15,             // vertical margin from bottom
   },
 
   // TikTok (Phase 2)

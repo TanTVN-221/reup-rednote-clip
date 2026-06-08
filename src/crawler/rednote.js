@@ -1,9 +1,69 @@
-import { chromium } from 'playwright';
+import { chromium } from 'playwright-extra';
+import stealth from 'puppeteer-extra-plugin-stealth';
+import path from 'path';
+import fs from 'fs';
 import config from '../../config/default.js';
 import logger from '../utils/logger.js';
 
+chromium.use(stealth());
+
+const BROWSER_DATA_DIR = path.resolve('data', '.browser-profile');
+
+/**
+ * Launch a persistent browser context that saves cookies/session across runs.
+ */
+async function launchPersistentBrowser(options = {}) {
+  const { headless = false } = options;
+
+  if (!fs.existsSync(BROWSER_DATA_DIR)) {
+    fs.mkdirSync(BROWSER_DATA_DIR, { recursive: true });
+  }
+
+  const context = await chromium.launchPersistentContext(BROWSER_DATA_DIR, {
+    headless,
+    viewport: { width: 1280, height: 800 },
+    args: [
+      '--disable-blink-features=AutomationControlled',
+      '--no-sandbox',
+    ],
+  });
+
+  return context;
+}
+
+/**
+ * Interactive login flow: opens a visible browser for the user to log in manually.
+ */
+export async function loginToRedNote() {
+  logger.info('Opening browser for RedNote login...');
+  logger.info('Please log in manually. The browser will close automatically once login is detected.');
+
+  const context = await launchPersistentBrowser({ headless: false });
+  const page = context.pages()[0] || await context.newPage();
+
+  await page.goto('https://www.rednote.com', { waitUntil: 'domcontentloaded', timeout: 60000 });
+
+  logger.info('Waiting for login... (you have 5 minutes)');
+
+  try {
+    await page.waitForFunction(() => {
+      const bodyText = document.body?.innerText || '';
+      return !bodyText.includes('Log in to view') && !bodyText.includes('Scan QR code');
+    }, { timeout: 300000 });
+
+    logger.success('Login detected! Session saved.');
+  } catch (err) {
+    logger.warn('Login timeout. Please try again with: node src/cli.js login');
+  }
+
+  await context.close();
+}
+
 /**
  * Crawl a RedNote user profile to discover all video note URLs.
+ * 
+ * Opens a visible browser (required by RedNote's anti-bot), logs in if needed,
+ * then clicks each note card to extract the actual note ID from the URL.
  *
  * @param {string} channelUrl - The RedNote user profile URL
  * @returns {Promise<Array<{noteId: string, title: string, url: string}>>}
@@ -11,126 +71,187 @@ import logger from '../utils/logger.js';
 export async function crawlChannel(channelUrl) {
   logger.info(`Crawling channel: ${channelUrl}`);
 
-  const browser = await chromium.launch({
-    headless: true,
-  });
+  // Extract user ID from URL
+  const userIdMatch = channelUrl.match(/profile\/([a-f0-9]+)/);
+  if (!userIdMatch) {
+    logger.error('Invalid channel URL. Expected format: .../user/profile/<userId>');
+    return [];
+  }
+  const userId = userIdMatch[1];
+
+  // Must use visible browser — headless mode is detected by RedNote
+  const context = await launchPersistentBrowser({ headless: false });
 
   try {
-    const context = await browser.newContext({
-      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      viewport: { width: 1280, height: 800 },
-    });
+    const page = context.pages()[0] || await context.newPage();
 
-    // Set cookies if available
-    if (config.rednote.cookie) {
-      const cookies = parseCookieString(config.rednote.cookie, channelUrl);
-      await context.addCookies(cookies);
-    }
+    const videos = new Map();
 
-    const page = await context.newPage();
-    await page.goto(channelUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await page.waitForTimeout(2000);
+    // Intercept API responses to capture video note IDs
+    page.on('response', async (response) => {
+      try {
+        const respUrl = response.url();
+        if (respUrl.includes('/api/sns/web/v1/user_posted') && response.status() === 200) {
+          const json = await response.json();
+          const items = json.data?.notes || [];
+          for (const item of items) {
+            if (item.note_id) {
+              const hasVideo = item.type === 'video';
+              const xsecToken = item.xsec_token || '';
+              const fullUrl = xsecToken 
+                ? `https://www.rednote.com/explore/${item.note_id}?xsec_token=${xsecToken}&xsec_source=pc_user` 
+                : `https://www.rednote.com/explore/${item.note_id}`;
 
-    // Scroll to load all videos
-    const videos = new Map(); // noteId -> {title, url}
-    let previousCount = 0;
-    let noNewContentCount = 0;
-
-    for (let i = 0; i < config.rednote.maxScrolls; i++) {
-      // Extract video notes from the current page state
-      const newNotes = await page.evaluate(() => {
-        const notes = [];
-        // RedNote uses various selectors for note cards
-        const selectors = [
-          'a[href*="/explore/"]',
-          'a[href*="/discovery/item/"]',
-          'section.note-item a',
-          '.note-item a',
-          '[class*="note"] a[href*="explore"]',
-        ];
-
-        for (const selector of selectors) {
-          const links = document.querySelectorAll(selector);
-          for (const link of links) {
-            const href = link.getAttribute('href');
-            if (!href) continue;
-
-            // Extract note ID from URL
-            const match = href.match(/\/(?:explore|discovery\/item)\/([a-f0-9]+)/);
-            if (match) {
-              const noteId = match[1];
-              // Try to get title from various elements
-              const titleEl = link.querySelector('.title, .desc, [class*="title"], [class*="desc"]');
-              const title = titleEl?.textContent?.trim() || '';
-              // Check if it has a video indicator
-              const hasVideo = link.querySelector('[class*="video"], [class*="play"], svg[class*="play"]') !== null;
-              notes.push({
-                noteId,
-                title,
-                url: href.startsWith('http') ? href : `https://www.xiaohongshu.com${href}`,
-                hasVideo,
-              });
+              if (!videos.has(item.note_id)) {
+                videos.set(item.note_id, {
+                  noteId: item.note_id,
+                  title: item.display_title || '',
+                  url: fullUrl,
+                  hasVideo,
+                  xsecToken,
+                });
+                logger.debug(`[API] Found: ${item.display_title || item.note_id} (${item.type})`);
+              }
             }
           }
         }
-        return notes;
-      });
-
-      // Add new notes to our collection
-      for (const note of newNotes) {
-        if (!videos.has(note.noteId)) {
-          videos.set(note.noteId, note);
-        }
+      } catch (e) {
+        // Ignore parse errors
       }
+    });
 
-      // Check if we got new content
+    const profileUrl = `https://www.rednote.com/user/profile/${userId}`;
+    logger.info(`Opening profile: ${profileUrl}`);
+
+    await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.waitForTimeout(3000);
+
+    // Check if we need to log in
+    const needsLogin = await page.evaluate(() => {
+      const text = document.body?.innerText || '';
+      return text.includes('Log in to view') || text.includes('Scan QR code');
+    });
+
+    if (needsLogin) {
+      logger.warn('Login required. Please log in in the browser window...');
+      logger.info('Waiting for login... (you have 5 minutes)');
+
+      try {
+        await page.waitForFunction(() => {
+          const text = document.body?.innerText || '';
+          return !text.includes('Log in to view') && !text.includes('Scan QR code');
+        }, { timeout: 300000 });
+
+        logger.success('Login successful!');
+        await page.waitForTimeout(3000);
+      } catch {
+        logger.error('Login timeout. Please run: node src/cli.js login');
+        return [];
+      }
+    }
+
+    // Check for IP ban
+    const isBanned = await page.evaluate(() => {
+      const text = document.body?.innerText || '';
+      return text.includes('安全限制') || text.includes('300012');
+    });
+    if (isBanned) {
+      logger.error('IP banned by RedNote (Error 300012). Try restarting your router.');
+      return [];
+    }
+
+    logger.info('Page loaded. Collecting notes...');
+
+    // Wait for initial API response to come in
+    await page.waitForTimeout(3000);
+
+    // Scroll to trigger more API calls and load all notes
+    let previousCount = videos.size;
+    let noNewContentCount = 0;
+    const maxScrolls = config.rednote?.maxScrolls || 30;
+    const scrollDelay = config.rednote?.scrollDelay || 2000;
+
+    for (let i = 0; i < maxScrolls; i++) {
+      await page.evaluate(() => window.scrollBy(0, window.innerHeight));
+      await page.waitForTimeout(scrollDelay);
+
       if (videos.size === previousCount) {
         noNewContentCount++;
         if (noNewContentCount >= 3) {
-          logger.info(`No new content after ${noNewContentCount} scrolls, stopping`);
+          logger.debug(`No new content after ${noNewContentCount} scrolls, stopping`);
           break;
         }
       } else {
         noNewContentCount = 0;
         previousCount = videos.size;
-        logger.debug(`Found ${videos.size} notes so far...`);
+        logger.info(`Found ${videos.size} notes so far...`);
       }
-
-      // Scroll down
-      await page.evaluate(() => window.scrollBy(0, window.innerHeight));
-      await page.waitForTimeout(config.rednote.scrollDelay);
     }
 
-    const result = Array.from(videos.values());
+    // If API interception didn't find anything, try DOM extraction
+    if (videos.size === 0) {
+      logger.info('No API data captured. Extracting from DOM...');
 
-    // Filter to only video notes if possible
+      const domNotes = await page.evaluate(() => {
+        const extracted = [];
+        // Look for links that match the pattern /user/profile/<userId>/<noteId>
+        const links = document.querySelectorAll('a[href*="/user/profile/"]');
+        for (const link of links) {
+          const href = link.getAttribute('href');
+          const match = href.match(/\/user\/profile\/[a-f0-9]+\/([a-f0-9]{24})/);
+          if (match) {
+            const noteId = match[1];
+            // Get title from child element or adjacent title link
+            const noteContainer = link.closest('.note-item, [class*="note"]');
+            const titleEl = noteContainer?.querySelector('.title, [class*="title"], [class*="desc"]');
+            const title = titleEl?.textContent?.trim() || '';
+            // Check if it's a video
+            const hasVideo = !!noteContainer?.querySelector('.play-icon, [class*="video-icon"]');
+            
+            // Extract xsec_token
+            const tokenMatch = href.match(/xsec_token=([^&]+)/);
+            const xsecToken = tokenMatch ? tokenMatch[1] : '';
+            
+            const fullUrl = xsecToken 
+              ? `https://www.rednote.com/explore/${noteId}?xsec_token=${xsecToken}&xsec_source=pc_user` 
+              : `https://www.rednote.com/explore/${noteId}`;
+
+            extracted.push({
+              noteId,
+              title,
+              url: fullUrl,
+              hasVideo,
+              xsecToken
+            });
+          }
+        }
+        return extracted;
+      });
+
+      for (const note of domNotes) {
+        if (!videos.has(note.noteId)) {
+          videos.set(note.noteId, note);
+          logger.debug(`[DOM] Found: ${note.title || note.noteId}`);
+        }
+      }
+    }
+
+    // Filter and return results
+    const result = Array.from(videos.values());
     const videoNotes = result.filter(n => n.hasVideo);
     const finalList = videoNotes.length > 0 ? videoNotes : result;
 
-    logger.success(`Found ${finalList.length} video(s) in channel`);
+    if (finalList.length === 0) {
+      logger.warn('No videos found in channel.');
+    } else {
+      logger.success(`Found ${finalList.length} video(s) in channel`);
+    }
+
     return finalList;
 
   } finally {
-    await browser.close();
+    await context.close();
   }
 }
 
-/**
- * Parse a cookie string into Playwright cookie objects.
- */
-function parseCookieString(cookieStr, url) {
-  const urlObj = new URL(url);
-  const domain = urlObj.hostname.includes('rednote.com') ? '.rednote.com' : '.xiaohongshu.com';
-
-  return cookieStr.split(';').map(pair => {
-    const [name, ...valueParts] = pair.trim().split('=');
-    return {
-      name: name.trim(),
-      value: valueParts.join('=').trim(),
-      domain,
-      path: '/',
-    };
-  }).filter(c => c.name);
-}
-
-export default { crawlChannel };
+export default { crawlChannel, loginToRedNote };

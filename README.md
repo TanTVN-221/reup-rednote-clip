@@ -4,7 +4,7 @@ An automated, end-to-end pipeline designed to download videos from RedNote (Xiao
 
 ## ✨ Features
 
-- **Automated Downloading**: Fetch single videos or crawl entire RedNote channels (powered by Apify/Playwright).
+- **Automated Downloading**: Fetch single videos or crawl entire RedNote channels (powered natively by Playwright Chromium).
 - **Local Video Processing**: Easily process bulk `.mp4` files from a local directory.
 - **Smart Transcription**: Uses local Whisper AI models to accurately transcribe Chinese audio.
 - **OCR Text Extraction**: Scans videos for hardcoded Chinese text, translates it, and overlays a solid background box to cover the original text.
@@ -47,7 +47,6 @@ Before running this project, ensure you have the following installed on your sys
    ```
    **Required Keys in `.env`:**
    - `GEMINI_API_KEY`: Your Google Gemini API Key for translation.
-   - `APIFY_TOKEN`: Your Apify token (for reliable RedNote downloading).
 
 ## 🚀 Usage
 

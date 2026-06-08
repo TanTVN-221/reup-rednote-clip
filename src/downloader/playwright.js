@@ -1,8 +1,15 @@
-import { chromium } from 'playwright';
+import { chromium } from 'playwright-extra';
+import stealth from 'puppeteer-extra-plugin-stealth';
+
+chromium.use(stealth());
 import { createWriteStream } from 'fs';
 import { pipeline } from 'stream/promises';
 import config from '../../config/default.js';
 import logger from '../utils/logger.js';
+
+import path from 'path';
+
+const BROWSER_DATA_DIR = path.resolve('data', '.browser-profile');
 
 /**
  * Download a video using Playwright by intercepting network requests.
@@ -14,21 +21,14 @@ import logger from '../utils/logger.js';
 export async function downloadWithPlaywright(url, outputPath) {
   logger.info(`Downloading with Playwright: ${url}`);
 
-  const browser = await chromium.launch({ headless: true });
+  const context = await chromium.launchPersistentContext(BROWSER_DATA_DIR, {
+    headless: true,
+    viewport: { width: 1280, height: 800 },
+    args: ['--disable-blink-features=AutomationControlled', '--no-sandbox'],
+  });
 
   try {
-    const context = await browser.newContext({
-      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      viewport: { width: 1280, height: 800 },
-    });
-
-    // Set cookies if available
-    if (config.rednote.cookie) {
-      const cookies = parseCookieString(config.rednote.cookie, url);
-      await context.addCookies(cookies);
-    }
-
-    const page = await context.newPage();
+    const page = context.pages()[0] || await context.newPage();
 
     // Collect video URLs from network requests
     const videoUrls = [];
@@ -37,14 +37,16 @@ export async function downloadWithPlaywright(url, outputPath) {
       const responseUrl = response.url();
       const contentType = response.headers()['content-type'] || '';
 
-      // Look for video content
-      if (
-        contentType.includes('video/') ||
+      const isVideoPattern = contentType.includes('video/') ||
         responseUrl.includes('.mp4') ||
         responseUrl.includes('/video/') ||
         responseUrl.includes('sns-video') ||
-        responseUrl.includes('xhscdn')
-      ) {
+        responseUrl.includes('sns-v');
+
+      const isImage = contentType.includes('image/') || 
+        responseUrl.match(/\.(jpg|jpeg|png|webp|gif)/i);
+
+      if (isVideoPattern && !isImage) {
         videoUrls.push({
           url: responseUrl,
           contentType,
@@ -130,7 +132,7 @@ export async function downloadWithPlaywright(url, outputPath) {
     return outputPath;
 
   } finally {
-    await browser.close();
+    await context.close();
   }
 }
 

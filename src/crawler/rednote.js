@@ -113,9 +113,10 @@ export async function crawlChannel(channelUrl, options = {}) {
                   title: item.display_title || '',
                   url: fullUrl,
                   hasVideo,
+                  isTop: item.is_top === true || item.is_top === 'true',
                   xsecToken,
                 });
-                logger.debug(`[API] Found: ${item.display_title || item.note_id} (${item.type})`);
+                logger.debug(`[API] Found: ${item.display_title || item.note_id} (${item.type}) [Pinned: ${item.is_top ? 'yes' : 'no'}]`);
               }
             }
           }

@@ -1,15 +1,17 @@
 # 🎬 RedNote Clip Downloader & Translator
 
-An automated, end-to-end pipeline designed to download videos from RedNote (Xiaohongshu), transcribe the audio, translate Chinese to Vietnamese, generate a synchronized Vietnamese voiceover, and burn highly legible subtitles directly into the video—making it instantly ready for re-uploading to TikTok or Reels.
+An automated, end-to-end pipeline designed to download videos from RedNote (rednote), transcribe the audio, translate Chinese to Vietnamese, generate a synchronized Vietnamese voiceover, and burn highly legible subtitles directly into the video—making it instantly ready for re-uploading to TikTok or Reels.
 
 ## ✨ Features
 
 - **Automated Downloading**: Fetch single videos or crawl entire RedNote channels (powered natively by Playwright Chromium).
+- **Metadata Extraction**: Captures original video captions, tags, and timestamps, saving them to JSON for use in TikTok uploads.
+- **Smart State Tracking**: Automatically tracks processed videos by user ID, skipping duplicates. Ideal for daily scheduled runs!
 - **Local Video Processing**: Easily process bulk `.mp4` files from a local directory.
 - **Smart Transcription**: Uses local Whisper AI models to accurately transcribe Chinese audio.
 - **OCR Text Extraction**: Scans videos for hardcoded Chinese text, translates it, and overlays a solid background box to cover the original text.
 - **AI Translation with Glossary**: Uses Google Gemini AI (with a multi-model fallback system) to translate Chinese to Vietnamese. Supports a custom Glossary to enforce specific domain vocabulary!
-- **Triple-Fallback TTS Engine**: Generates natural Vietnamese voiceovers using Microsoft Edge TTS, with automatic fallbacks to Python `edge-tts` and `google-tts-api` to prevent rate-limit crashes.
+- **Triple-Fallback TTS Engine**: Generates natural Vietnamese voiceovers in parallel using Microsoft Edge TTS, with automatic fallbacks to Python `edge-tts` and `google-tts-api` to prevent rate-limit crashes.
 - **Auto-Trimming**: Automatically trims intros and RedNote watermarked outros without misaligning the audio/subtitles.
 - **Subtitle Burn-in**: Highly stylized, aesthetic subtitle generation using FFmpeg ASS filters.
 
@@ -47,40 +49,55 @@ Before running this project, ensure you have the following installed on your sys
    ```
    **Required Keys in `.env`:**
    - `GEMINI_API_KEY`: Your Google Gemini API Key for translation.
+   - `TTS_PROVIDER`: Set to `google` to completely bypass Edge rate limits, or `auto` to attempt Edge first.
 
 ## 🚀 Usage
 
-The pipeline is operated entirely via the CLI. 
+The pipeline is operated entirely via the CLI using a single, smart command. 
 
-### 1. Process a Local Directory
+### Processing Videos
+The `process` command automatically detects if you are passing a RedNote channel URL, a single RedNote video URL, or a local directory folder.
+
+**1. Process an Entire Channel (Indefinite Crawl)**
+```bash
+node src/cli.js process "https://www.rednote.com/user/profile/..."
+```
+
+**2. Process a Single URL**
+```bash
+node src/cli.js process "https://www.rednote.com/explore/..."
+```
+
+**3. Process a Local Directory**
 Process a folder of pre-downloaded `.mp4` files.
 ```bash
-node src/cli.js process-local ./videos_test
-```
-
-### 2. Process a Single URL
-Download and process a specific RedNote video.
-```bash
-node src/cli.js process-video "https://www.xiaohongshu.com/explore/..."
-```
-
-### 3. Process an Entire Channel
-Crawl and process all videos from a RedNote creator's channel.
-```bash
-node src/cli.js process-channel "https://www.xiaohongshu.com/user/profile/..."
+node src/cli.js process ./videos_test
 ```
 
 ### ⚙️ Helpful CLI Flags
-You can append these flags to any of the processing commands above to customize the pipeline:
+You can append these flags to the `process` command:
 - `--skip-ocr`: Skips optical character recognition (makes processing significantly faster if the video has no hardcoded on-screen text).
 - `--skip-tts`: Skips Vietnamese voiceover generation (keeps original audio).
-- `--clean-all`: Completely wipes the temporary, transcript, and translation cache folders after the pipeline finishes.
-- `--resume`: (Channel only) Resumes processing a channel if it was previously interrupted.
-- `--limit <n>`: (Channel only) Limits the maximum number of videos to process.
+- `--limit <n>`: Limits the maximum number of *new* videos to process (Channels and Local only).
+- `--force`: Ignores the pipeline state and forcefully re-processes all videos.
+- `--upload`: Automatically uploads newly processed videos (AND any previously processed videos that haven't been uploaded yet) to TikTok via Zernio in chronological order.
+- `--draft`: Used in conjunction with `--upload`. Uploads the video to TikTok as a draft instead of publishing it immediately.
+- `--debug`: Enable verbose debug logging.
 
 *Example:*
 ```bash
-node src/cli.js process-local ./videos_test --skip-ocr --clean-all
+node src/cli.js process ./videos_test --skip-ocr --upload
+```
+
+## ⏱️ Scheduling Daily Runs
+
+The `process` command tracks previously processed videos in `data/pipeline_state.json`. If you run the command again, it will **automatically skip already-processed videos**. This makes it perfect for a daily cron job! 
+
+With the `--upload` flag, it creates a fully hands-free pipeline from RedNote straight to TikTok.
+
+**Example Cron Job (runs every day at 8:00 AM):**
+```bash
+0 8 * * * cd /path/to/reup-rednote-clip && node src/cli.js process "https://www.rednote.com/user/profile/..." --skip-ocr --upload >> data/cron.log 2>&1
 ```
 
 ## 📚 Custom Dictionary (Glossary)
@@ -112,3 +129,6 @@ CUT_OUTRO_SECONDS=3.0
 - `data/translated/`: Gemini translated Vietnamese SRTs.
 - `data/output/`: Final rendered videos ready for TikTok.
 - `data/temp/`: Ephemeral processing files.
+
+## References
+- Setup Zernito Turtorial Video: https://www.youtube.com/watch?v=nYFP985QuHk

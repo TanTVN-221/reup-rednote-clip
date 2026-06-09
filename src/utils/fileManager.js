@@ -83,11 +83,10 @@ export function getTranslatedPath(noteId) {
 }
 
 /**
- * Get the output path for a processed video.
+ * Get the output path for a processed video (always uses noteId for predictable naming).
  */
-export function getOutputPath(noteId, title = '') {
-  const filename = title ? safeFilename(title) : `${noteId}.mp4`;
-  return join(config.outputDir, `vi_${filename}`);
+export function getOutputPath(noteId) {
+  return join(config.outputDir, `${noteId}.mp4`);
 }
 
 /**

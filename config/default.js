@@ -89,10 +89,10 @@ const config = {
     marginV: 15,             // vertical margin from bottom
   },
 
-  // TikTok (Phase 2)
-  tiktok: {
-    clientKey: process.env.TIKTOK_CLIENT_KEY || '',
-    clientSecret: process.env.TIKTOK_CLIENT_SECRET || '',
+  // Zernio Upload (Phase 2)
+  zernio: {
+    apiKey: process.env.ZERNIO_API_KEY || '',
+    tiktokAccountId: process.env.ZERNIO_TIKTOK_ACCOUNT_ID || '',
   },
 };
 

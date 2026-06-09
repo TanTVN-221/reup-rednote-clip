@@ -141,7 +141,7 @@ export async function processVideo(video, options = {}) {
     currentStep++;
     pipelineHeader(title || noteId, currentStep, TOTAL_STEPS);
 
-    const outputPath = getOutputPath(noteId, title);
+    const outputPath = getOutputPath(noteId);
     let finalVideoPath;
 
     if (!skipTts) {
@@ -162,9 +162,23 @@ export async function processVideo(video, options = {}) {
       if (srtPathToUse !== translatedPath) await unlink(srtPathToUse);
     } catch { /* ignore */ }
 
-    // ── Step 7: Done! ──
+    // ── Step 7: Save output metadata & Done! ──
     currentStep++;
     pipelineHeader(title || noteId, currentStep, TOTAL_STEPS);
+
+    // Save caption metadata JSON alongside the output video for Zernio/TikTok upload
+    const outputCaptionPath = join(config.outputDir, `${noteId}_caption.json`);
+    const captionData = {
+      noteId,
+      originalTitle: title || '',
+      originalCaption: caption?.desc || '',
+      originalTags: caption?.tags || [],
+      publishTime: caption?.publishTime || null,
+      sourceUrl: url,
+      processedAt: new Date().toISOString(),
+    };
+    await writeFile(outputCaptionPath, JSON.stringify(captionData, null, 2), 'utf-8');
+    logger.info(`Output caption saved: ${outputCaptionPath}`);
 
     const outputSizeMB = await getFileSizeMB(finalVideoPath);
     logger.success(`Output: ${finalVideoPath} (${outputSizeMB} MB)`);
@@ -174,11 +188,12 @@ export async function processVideo(video, options = {}) {
       title: title || noteId,
       url,
       outputPath: finalVideoPath,
+      captionPath: outputCaptionPath,
       transcriptPath: srtPathToUse,
       sizeMB: outputSizeMB,
       skippedOcr: skipOcr,
       skippedTts: skipTts,
-      caption,
+      caption: captionData,
     };
 
   } catch (err) {
@@ -219,9 +234,11 @@ export async function processChannel(videos, options = {}) {
 }
 
 /**
- * Save pipeline state for resume capability.
+ * Save pipeline state with video metadata.
+ * Each entry in processedVideos is: { noteId, publishTime, title, outputPath }
+ * Entries are sorted by publishTime (oldest first) for ordered TikTok uploads.
  */
-export async function savePipelineState(channelUrl, processedIds) {
+export async function savePipelineState(channelKey, processedVideos) {
   const statePath = join(config.dataDir, 'pipeline_state.json');
   let state = {};
 
@@ -230,8 +247,15 @@ export async function savePipelineState(channelUrl, processedIds) {
     state = JSON.parse(existing);
   } catch { /* no existing state */ }
 
-  state[channelUrl] = {
-    processedIds,
+  // Sort by publishTime (oldest first) so uploads go in chronological order
+  const sorted = [...processedVideos].sort((a, b) => {
+    const tA = a.publishTime || 0;
+    const tB = b.publishTime || 0;
+    return tA - tB;
+  });
+
+  state[channelKey] = {
+    processedVideos: sorted,
     lastUpdated: new Date().toISOString(),
   };
 
@@ -239,15 +263,53 @@ export async function savePipelineState(channelUrl, processedIds) {
 }
 
 /**
- * Load pipeline state for resume capability.
+ * Load the list of already-processed noteIds for deduplication.
+ * Handles both the new format (objects) and legacy format (flat string array).
  */
-export async function loadPipelineState(channelUrl) {
+export async function loadPipelineState(channelKey) {
   const statePath = join(config.dataDir, 'pipeline_state.json');
 
   try {
     const content = await readFile(statePath, 'utf-8');
     const state = JSON.parse(content);
-    return state[channelUrl]?.processedIds || [];
+    const entry = state[channelKey];
+    if (!entry) return [];
+
+    // New format: processedVideos array of objects
+    if (entry.processedVideos) {
+      return entry.processedVideos.map(v => v.noteId);
+    }
+    // Legacy format: processedIds flat array of strings
+    if (entry.processedIds) {
+      return entry.processedIds;
+    }
+    return [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Load the full processed video entries (with metadata) for a channel.
+ * Returns: Array<{ noteId, publishTime, title, outputPath }>
+ */
+export async function loadPipelineVideos(channelKey) {
+  const statePath = join(config.dataDir, 'pipeline_state.json');
+
+  try {
+    const content = await readFile(statePath, 'utf-8');
+    const state = JSON.parse(content);
+    const entry = state[channelKey];
+    if (!entry) return [];
+
+    if (entry.processedVideos) {
+      return entry.processedVideos;
+    }
+    // Legacy: convert flat IDs to minimal objects
+    if (entry.processedIds) {
+      return entry.processedIds.map(id => ({ noteId: id }));
+    }
+    return [];
   } catch {
     return [];
   }

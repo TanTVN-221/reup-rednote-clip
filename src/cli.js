@@ -8,10 +8,11 @@ import { ensureDirectories, cleanTemp, cleanCache } from './utils/fileManager.js
 import { printSummary } from './utils/progress.js';
 import { crawlChannel, loginToRedNote } from './crawler/rednote.js';
 import { downloadVideo } from './downloader/index.js';
-import { processVideo, processChannel, loadPipelineState, savePipelineState } from './pipeline.js';
+import { processVideo, processChannel, loadPipelineState, loadPipelineVideos, savePipelineState } from './pipeline.js';
 import { translateSrt } from './translator/index.js';
 import { burnSubtitles } from './video/subtitle.js';
 import { addTtsVoiceover } from './video/tts.js';
+import { uploadToTikTok } from './uploader/zernio.js';
 import { addGlossaryTerm, listGlossaryTerms } from './translator/glossary.js';
 
 const program = new Command();
@@ -33,178 +34,243 @@ program
   });
 
 // ─────────────────────────────────────────────────────────
-// process-channel: Full pipeline for an entire channel
+// process: Smart pipeline (auto-detects channel, video, or local dir)
 // ─────────────────────────────────────────────────────────
 program
-  .command('process-channel')
-  .description('Full pipeline: crawl channel → download → transcribe → translate → render')
-  .argument('<url>', 'RedNote channel/user profile URL')
+  .command('process')
+  .description('Process videos from a RedNote URL (channel/video) or a local directory')
+  .argument('<input>', 'RedNote URL or local directory path')
   .option('--skip-ocr', 'Skip OCR text extraction', false)
   .option('--skip-tts', 'Skip TTS voiceover generation', false)
-  .option('--limit <n>', 'Maximum number of videos to process', parseInt)
-  .option('--resume', 'Resume from last processed video', false)
+  .option('--limit <n>', 'Maximum number of NEW videos to process (channels/directories only)', parseInt)
+  .option('--force', 'Re-process all videos (ignore previously processed)', false)
+  .option('--upload', 'Automatically upload to TikTok via Zernio after processing', false)
+  .option('--draft', 'Upload video as a draft instead of publishing immediately', false)
   .option('--debug', 'Enable debug logging', false)
-  .action(async (url, options) => {
+  .action(async (input, options) => {
     try {
       if (options.debug) logger.setLevel('debug');
       await ensureDirectories();
 
-      // Step 1: Crawl channel
-      logger.divider('Crawling Channel');
-      const crawlLimit = (options.limit && options.limit > 0) ? options.limit : 0;
-      const videos = await crawlChannel(url, { limit: crawlLimit });
+      let isChannel = false;
+      let isSingleVideo = false;
+      let isLocalDir = false;
 
-      if (videos.length === 0) {
-        logger.error('No videos found in channel');
-        process.exit(1);
+      // Auto-detect input type
+      if (input.includes('profile/')) {
+        isChannel = true;
+      } else if (input.includes('explore/') || input.includes('discovery/')) {
+        isSingleVideo = true;
+      } else {
+        // Check if it's a valid local directory
+        try {
+          const { stat } = await import('fs/promises');
+          const stats = await stat(input);
+          if (stats.isDirectory()) {
+            isLocalDir = true;
+          } else {
+            throw new Error('Not a directory');
+          }
+        } catch {
+          logger.error('Input is not a valid RedNote URL or local directory.');
+          process.exit(1);
+        }
       }
 
-      // Resume support
-      let videosToProcess = videos;
-      if (options.resume) {
-        const processedIds = await loadPipelineState(url);
-        videosToProcess = videos.filter(v => !processedIds.includes(v.noteId));
-        logger.info(`Resuming: ${videosToProcess.length} remaining (${processedIds.length} already processed)`);
-      }
+      let results = [];
+      let stateKey = null;
 
-      // Apply limit (final safety — crawlChannel may have returned extras)
-      if (options.limit && options.limit > 0) {
-        videosToProcess = videosToProcess.slice(0, options.limit);
-      }
+      if (isChannel) {
+        logger.divider('Processing Channel');
+        const userIdMatch = input.match(/profile\/([a-f0-9]+)/);
+        stateKey = userIdMatch ? userIdMatch[1] : input;
 
-      logger.info(`Will process ${videosToProcess.length} video(s)`);
+        const videos = await crawlChannel(input, { limit: 0 }); // crawl all first
+        if (videos.length === 0) {
+          logger.error('No videos found in channel');
+          process.exit(1);
+        }
 
-      // Step 2: Process each video
-      const results = await processChannel(videosToProcess, {
-        skipOcr: options.skipOcr,
-        skipTts: options.skipTts,
-      });
+        let videosToProcess = videos;
+        const previousIds = await loadPipelineState(stateKey);
 
-      // Save state for resume
-      const processedIds = results
-        .filter(r => r.success)
-        .map(r => videosToProcess.find(v => (v.title || v.noteId) === r.title)?.noteId)
-        .filter(Boolean);
+        if (!options.force && previousIds.length > 0) {
+          videosToProcess = videos.filter(v => !previousIds.includes(v.noteId));
+          logger.info(`Skipping ${previousIds.length} already processed video(s)`);
+        }
 
-      const previousIds = options.resume ? await loadPipelineState(url) : [];
-      await savePipelineState(url, [...previousIds, ...processedIds]);
+        if (videosToProcess.length === 0) {
+          logger.info('✅ No new videos to process. Everything is up to date!');
+          return;
+        }
 
-      // Summary
-      printSummary(results);
+        if (options.limit && options.limit > 0) {
+          // Push pinned videos to the end to ensure the limit slice prioritizes the chronologically newest unpinned videos
+          videosToProcess.sort((a, b) => {
+            if (a.isTop && !b.isTop) return 1;
+            if (!a.isTop && b.isTop) return -1;
+            return 0;
+          });
+          videosToProcess = videosToProcess.slice(0, options.limit);
+        }
 
-      // Clean up temporary files
-      await cleanTemp();
-      if (options.cleanAll) {
-        await cleanCache();
-        logger.info('Cache directories (transcripts, translated) cleaned up');
-      }
-      logger.info('Temporary files cleaned up');
+        logger.info(`Will process ${videosToProcess.length} new video(s)`);
+        
+        results = await processChannel(videosToProcess, {
+          skipOcr: options.skipOcr,
+          skipTts: options.skipTts,
+        });
 
-    } catch (err) {
-      logger.error(`Fatal error: ${err.message}`);
-      if (options.debug) console.error(err);
-      process.exit(1);
-    }
-  });
+      } else if (isSingleVideo) {
+        logger.divider('Processing Single Video');
+        const noteIdMatch = input.match(/\/(?:explore|discovery\/item)\/([a-f0-9]+)/);
+        const noteId = noteIdMatch ? noteIdMatch[1] : `video_${Date.now()}`;
+        stateKey = noteId; // For state saving
 
-// ─────────────────────────────────────────────────────────
-// process-local: Process local videos
-// ─────────────────────────────────────────────────────────
-program
-  .command('process-local')
-  .description('Process local video files from a directory')
-  .argument('<dir>', 'Directory containing local video files')
-  .option('--skip-ocr', 'Skip OCR text extraction', false)
-  .option('--skip-tts', 'Skip TTS voiceover generation', false)
-  .option('--clean-all', 'Clear all files in temp, transcripts, and translated directories after finishing', false)
-  .option('--debug', 'Enable debug logging', false)
-  .action(async (dir, options) => {
-    try {
-      if (options.debug) logger.setLevel('debug');
-      await ensureDirectories();
-      const { readdir } = await import('fs/promises');
-      const { join, basename, extname, resolve } = await import('path');
-
-      const fullDir = resolve(dir);
-      const files = await readdir(fullDir);
-      const mp4Files = files.filter(f => f.endsWith('.mp4'));
-
-      if (mp4Files.length === 0) {
-        logger.error(`No .mp4 files found in ${fullDir}`);
-        process.exit(1);
-      }
-
-      logger.info(`Found ${mp4Files.length} video(s) to process in ${fullDir}`);
-      const results = [];
-
-      for (let i = 0; i < mp4Files.length; i++) {
-        const fileName = mp4Files[i];
-        const videoPath = join(fullDir, fileName);
-
-        // Extract ID from name like "10_69c40899000000001a02f4e5.mp4"
-        const noteIdMatch = fileName.match(/_([a-f0-9]{24})\.mp4$/) || fileName.match(/^([a-f0-9]+)/);
-        const noteId = noteIdMatch ? noteIdMatch[1] : `local_${Date.now()}`;
-        const title = basename(fileName, extname(fileName));
-
-        logger.divider(`Video ${i + 1} of ${mp4Files.length}`);
         const result = await processVideo(
-          { noteId, title, url: 'local' },
-          { skipDownload: true, videoPath, skipOcr: options.skipOcr, skipTts: options.skipTts }
+          { noteId, title: '', url: input },
+          { skipOcr: options.skipOcr, skipTts: options.skipTts }
         );
-        results.push(result);
+        results = [result];
+
+      } else if (isLocalDir) {
+        logger.divider('Processing Local Directory');
+        const { readdir } = await import('fs/promises');
+        const { join, basename, extname, resolve } = await import('path');
+        const fullDir = resolve(input);
+        const files = await readdir(fullDir);
+        const mp4Files = files.filter(f => f.endsWith('.mp4'));
+        
+        if (mp4Files.length === 0) {
+          logger.error(`No .mp4 files found in ${fullDir}`);
+          process.exit(1);
+        }
+
+        // We use the absolute path of the directory as the state key
+        stateKey = fullDir; 
+        
+        let filesToProcess = mp4Files;
+        const previousIds = await loadPipelineState(stateKey);
+
+        if (!options.force && previousIds.length > 0) {
+          // For local files, the 'noteId' is typically extracted from the filename
+          filesToProcess = mp4Files.filter(fileName => {
+             const noteIdMatch = fileName.match(/_([a-f0-9]{24})\.mp4$/) || fileName.match(/^([a-f0-9]+)/);
+             const noteId = noteIdMatch ? noteIdMatch[1] : basename(fileName, '.mp4');
+             return !previousIds.includes(noteId);
+          });
+          logger.info(`Skipping ${mp4Files.length - filesToProcess.length} already processed video(s)`);
+        }
+
+        if (filesToProcess.length === 0) {
+          logger.info('✅ No new videos to process in this directory.');
+          return;
+        }
+
+        if (options.limit && options.limit > 0) {
+          filesToProcess = filesToProcess.slice(0, options.limit);
+        }
+
+        logger.info(`Found ${filesToProcess.length} new video(s) to process in ${fullDir}`);
+
+        for (let i = 0; i < filesToProcess.length; i++) {
+          const fileName = filesToProcess[i];
+          const videoPath = join(fullDir, fileName);
+
+          const noteIdMatch = fileName.match(/_([a-f0-9]{24})\.mp4$/) || fileName.match(/^([a-f0-9]+)/);
+          const noteId = noteIdMatch ? noteIdMatch[1] : basename(fileName, extname(fileName));
+          const title = basename(fileName, extname(fileName));
+
+          logger.divider(`Video ${i + 1} of ${filesToProcess.length}`);
+          const result = await processVideo(
+            { noteId, title, url: 'local' },
+            { skipDownload: true, videoPath, skipOcr: options.skipOcr, skipTts: options.skipTts }
+          );
+          results.push(result);
+        }
+      }
+
+      // Always save state (append newly processed entries with metadata)
+      if (stateKey) {
+        const previousEntries = await loadPipelineVideos(stateKey);
+        const newEntries = results
+          .filter(r => r.success)
+          .map(r => {
+            // Re-resolve original noteId for single videos or local files if needed, but r.title or r.url usually hold enough info
+            const noteIdMatch = r.url?.match(/\/(?:explore|discovery\/item)\/([a-f0-9]+)/);
+            const fallbackNoteId = noteIdMatch ? noteIdMatch[1] : r.title;
+            
+            return {
+              noteId: fallbackNoteId,
+              title: r.title,
+              publishTime: r.caption?.publishTime || null,
+              outputPath: r.outputPath || null,
+              captionPath: r.captionPath || null,
+              processedAt: new Date().toISOString(),
+            };
+          });
+
+        await savePipelineState(stateKey, [...previousEntries, ...newEntries]);
       }
 
       printSummary(results);
-
-      // Clean up temporary files
       await cleanTemp();
-      if (options.cleanAll) {
-        await cleanCache();
-        logger.info('Cache directories (transcripts, translated) cleaned up');
-      }
       logger.info('Temporary files cleaned up');
 
-    } catch (err) {
-      logger.error(`Fatal error: ${err.message}`);
-      if (options.debug) console.error(err);
-      process.exit(1);
-    }
-  });
+      // Auto-upload
+      if (options.upload) {
+        logger.divider('Uploading to TikTok via Zernio');
+        const { readFile } = await import('fs/promises');
+        
+        // Load the latest state so we can mutate and save it
+        const allEntries = await loadPipelineVideos(stateKey);
+        
+        // Filter for ANY video that has been processed but not uploaded yet
+        let pendingUploads = allEntries.filter(entry => entry.outputPath && !entry.zernioPostId);
 
-// ─────────────────────────────────────────────────────────
-// process-video: Full pipeline for a single video URL
-// ─────────────────────────────────────────────────────────
-program
-  .command('process-video')
-  .description('Full pipeline for a single RedNote video')
-  .argument('<url>', 'RedNote video URL')
-  .option('--skip-ocr', 'Skip OCR text extraction', false)
-  .option('--skip-tts', 'Skip TTS voiceover generation', false)
-  .option('--clean-all', 'Clear all files in temp, transcripts, and translated directories after finishing', false)
-  .option('--debug', 'Enable debug logging', false)
-  .action(async (url, options) => {
-    try {
-      if (options.debug) logger.setLevel('debug');
-      await ensureDirectories();
+        if (pendingUploads.length === 0) {
+          logger.info('✅ No pending videos to upload.');
+        } else {
+          logger.info(`Found ${pendingUploads.length} video(s) ready to upload.`);
+          logger.info('Videos will be uploaded in chronological order (oldest publishTime first).');
 
-      // Extract note ID from URL
-      const noteIdMatch = url.match(/\/(?:explore|discovery\/item)\/([a-f0-9]+)/);
-      const noteId = noteIdMatch ? noteIdMatch[1] : `video_${Date.now()}`;
+          for (let i = 0; i < pendingUploads.length; i++) {
+             const entry = pendingUploads[i];
+             
+             logger.divider(`Uploading ${i + 1} of ${pendingUploads.length}: ${entry.noteId}`);
+             
+             let captionData = {};
+             if (entry.captionPath) {
+               try {
+                 const content = await readFile(entry.captionPath, 'utf-8');
+                 captionData = JSON.parse(content);
+               } catch (err) {
+                 logger.warn(`Could not read caption JSON at ${entry.captionPath}`);
+               }
+             }
 
-      const result = await processVideo(
-        { noteId, title: '', url },
-        { skipOcr: options.skipOcr, skipTts: options.skipTts }
-      );
+             const uploadResult = await uploadToTikTok(entry.outputPath, captionData, options.draft);
 
-      printSummary([result]);
+             if (uploadResult.success) {
+                // Find and update the entry in the state
+                const entryIndex = allEntries.findIndex(e => e.noteId === entry.noteId);
+                if (entryIndex !== -1) {
+                   allEntries[entryIndex].zernioPostId = uploadResult.postId;
+                   allEntries[entryIndex].uploadedAt = new Date().toISOString();
+                   await savePipelineState(stateKey, allEntries);
+                }
 
-      // Clean up temporary files
-      await cleanTemp();
-      if (options.cleanAll) {
-        await cleanCache();
-        logger.info('Cache directories (transcripts, translated) cleaned up');
+                if (i < pendingUploads.length - 1) {
+                  logger.info('Waiting 30 seconds before next upload to avoid rate limits...');
+                  await new Promise(resolve => setTimeout(resolve, 30000));
+                }
+             } else {
+                logger.error(`Failed to upload ${entry.noteId}. Stopping batch to preserve order.`);
+                break;
+             }
+          }
+        }
       }
-      logger.info('Temporary files cleaned up');
 
     } catch (err) {
       logger.error(`Fatal error: ${err.message}`);
@@ -306,6 +372,8 @@ program
       process.exit(1);
     }
   });
+
+
 
 // ─────────────────────────────────────────────────────────
 // glossary: Manage technical term glossary

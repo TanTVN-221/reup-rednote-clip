@@ -132,3 +132,5 @@ CUT_OUTRO_SECONDS=3.0
 
 ## References
 - Setup Zernito Turtorial Video: https://www.youtube.com/watch?v=nYFP985QuHk
+- Zernito Document: https://docs.zernio.com
+- Gemini API Document: https://ai.google.dev/gemini-api/docs?hl=vi

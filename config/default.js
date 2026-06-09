@@ -30,10 +30,9 @@ const config = {
 
 
 
-  // RedNote
+  // RedNote crawler settings
   rednote_settings: {
     scrollDelay: 2000,       // ms between scroll actions when crawling
-    maxScrolls: 50,          // max scroll attempts for channel crawling
     requestDelay: 1000,      // ms between requests (rate limiting)
   },
 
@@ -67,6 +66,7 @@ const config = {
 
   // TTS (Text-to-Speech)
   tts: {
+    provider: process.env.TTS_PROVIDER || 'auto', // 'auto', 'edge', or 'google'
     voice: process.env.TTS_VOICE || 'vi-VN-HoaiMyNeural',
     rate: process.env.TTS_RATE || '+0%',
     originalAudioVolume: parseFloat(process.env.ORIGINAL_AUDIO_VOLUME) || 0.2,

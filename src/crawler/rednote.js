@@ -63,12 +63,17 @@ export async function loginToRedNote() {
  * Crawl a RedNote user profile to discover all video note URLs.
  * 
  * Opens a visible browser (required by RedNote's anti-bot), logs in if needed,
- * then clicks each note card to extract the actual note ID from the URL.
+ * then scrolls through the profile to extract all video notes.
+ * 
+ * When no limit is set, scrolls until the entire channel is exhausted.
  *
  * @param {string} channelUrl - The RedNote user profile URL
+ * @param {object} [options] - Crawl options
+ * @param {number} [options.limit] - Max number of videos to return (0 or undefined = all)
  * @returns {Promise<Array<{noteId: string, title: string, url: string}>>}
  */
-export async function crawlChannel(channelUrl) {
+export async function crawlChannel(channelUrl, options = {}) {
+  const { limit = 0 } = options;
   logger.info(`Crawling channel: ${channelUrl}`);
 
   // Extract user ID from URL
@@ -204,14 +209,27 @@ export async function crawlChannel(channelUrl) {
     }
 
     // Step 2: Scroll to trigger API calls and load all remaining notes
+    // When limit is set, we can stop early once we have enough video notes.
+    // When no limit is set (limit=0), scroll until the channel is fully exhausted.
     let previousCount = videos.size;
     let noNewContentCount = 0;
-    const maxScrolls = config.rednote?.maxScrolls || 30;
-    const scrollDelay = config.rednote?.scrollDelay || 2000;
+    const scrollDelay = config.rednote_settings?.scrollDelay || 2000;
+    const maxEmptyScrolls = 5;  // stop after 5 consecutive scrolls with no new content
+    let scrollCount = 0;
 
-    for (let i = 0; i < maxScrolls; i++) {
+    while (true) {
+      // If limit is set and we already have enough video notes, stop scrolling
+      if (limit > 0) {
+        const currentVideoCount = Array.from(videos.values()).filter(n => n.hasVideo).length;
+        if (currentVideoCount >= limit) {
+          logger.info(`Reached limit of ${limit} videos, stopping scroll`);
+          break;
+        }
+      }
+
       await page.evaluate(() => window.scrollBy(0, window.innerHeight));
       await page.waitForTimeout(scrollDelay);
+      scrollCount++;
 
       // Also pick up any new DOM nodes rendered by scrolling
       const scrollDomNotes = await extractDomNotes();
@@ -221,16 +239,26 @@ export async function crawlChannel(channelUrl) {
         }
       }
 
+      // Check if the page shows an "end of content" indicator
+      const reachedEnd = await page.evaluate(() => {
+        const text = document.body?.innerText || '';
+        return text.includes('没有更多了') || text.includes('已经到底了') || text.includes('No more content');
+      });
+      if (reachedEnd) {
+        logger.info('Reached end of channel content');
+        break;
+      }
+
       if (videos.size === previousCount) {
         noNewContentCount++;
-        if (noNewContentCount >= 3) {
-          logger.debug(`No new content after ${noNewContentCount} scrolls, stopping`);
+        if (noNewContentCount >= maxEmptyScrolls) {
+          logger.info(`No new content after ${noNewContentCount} scrolls, channel fully loaded`);
           break;
         }
       } else {
         noNewContentCount = 0;
         previousCount = videos.size;
-        logger.info(`Found ${videos.size} notes so far...`);
+        logger.info(`Found ${videos.size} notes so far... (scroll #${scrollCount})`);
       }
     }
 

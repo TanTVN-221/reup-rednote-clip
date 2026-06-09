@@ -51,7 +51,8 @@ program
 
       // Step 1: Crawl channel
       logger.divider('Crawling Channel');
-      const videos = await crawlChannel(url);
+      const crawlLimit = (options.limit && options.limit > 0) ? options.limit : 0;
+      const videos = await crawlChannel(url, { limit: crawlLimit });
 
       if (videos.length === 0) {
         logger.error('No videos found in channel');
@@ -66,7 +67,7 @@ program
         logger.info(`Resuming: ${videosToProcess.length} remaining (${processedIds.length} already processed)`);
       }
 
-      // Apply limit
+      // Apply limit (final safety — crawlChannel may have returned extras)
       if (options.limit && options.limit > 0) {
         videosToProcess = videosToProcess.slice(0, options.limit);
       }

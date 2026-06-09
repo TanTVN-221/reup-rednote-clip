@@ -8,7 +8,7 @@ import { getDownloadPath } from '../utils/fileManager.js';
  * @param {string} url - The RedNote video URL
  * @param {string} noteId - The ID of the note
  * @param {string} title - Optional title for logging
- * @returns {Promise<string>} - Absolute path to downloaded video
+ * @returns {Promise<{videoPath: string, caption: {title: string, desc: string, tags: string[], publishTime: number|null}}>}
  */
 export async function downloadVideo(url, noteId, title = '') {
   const displayTitle = title ? ` (${title})` : '';

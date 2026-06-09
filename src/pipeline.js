@@ -39,13 +39,23 @@ export async function processVideo(video, options = {}) {
     pipelineHeader(title || noteId, currentStep, TOTAL_STEPS);
 
     let videoPath;
+    let caption = null;
     if (skipDownload && options.videoPath) {
       videoPath = options.videoPath;
       logger.info(`Using provided video: ${videoPath}`);
     } else {
-      videoPath = await withSpinner('Downloading video', async () => {
+      const downloadResult = await withSpinner('Downloading video', async () => {
         return await downloadVideo(url, noteId, title);
       });
+      videoPath = downloadResult.videoPath;
+      caption = downloadResult.caption;
+    }
+
+    // Save caption metadata as JSON
+    if (caption) {
+      const captionPath = join(config.downloadsDir, `${noteId}_caption.json`);
+      await writeFile(captionPath, JSON.stringify(caption, null, 2), 'utf-8');
+      logger.info(`Caption saved: ${captionPath}`);
     }
 
     const sizeMB = await getFileSizeMB(videoPath);
@@ -162,7 +172,13 @@ export async function processVideo(video, options = {}) {
     return {
       success: true,
       title: title || noteId,
+      url,
       outputPath: finalVideoPath,
+      transcriptPath: srtPathToUse,
+      sizeMB: outputSizeMB,
+      skippedOcr: skipOcr,
+      skippedTts: skipTts,
+      caption,
     };
 
   } catch (err) {
@@ -170,6 +186,7 @@ export async function processVideo(video, options = {}) {
     return {
       success: false,
       title: title || noteId,
+      url,
       error: err.message,
     };
   }

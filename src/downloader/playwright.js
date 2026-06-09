@@ -88,6 +88,28 @@ export async function downloadWithPlaywright(url, outputPath) {
       const ogVideo = document.querySelector('meta[property="og:video"]');
       if (ogVideo?.content) return ogVideo.content;
 
+      // Extract from __INITIAL_STATE__
+      try {
+        const state = window.__INITIAL_STATE__;
+        if (state && state.note && state.note.noteDetailMap) {
+          const noteMap = state.note.noteDetailMap;
+          const noteKeys = Object.keys(noteMap);
+          if (noteKeys.length > 0) {
+            const noteData = noteMap[noteKeys[0]];
+            const videoInfo = noteData?.note?.video;
+            if (videoInfo && videoInfo.media && videoInfo.media.stream) {
+              const streams = videoInfo.media.stream.h264 || [];
+              if (streams.length > 0) {
+                const bestStream = streams.sort((a, b) => (b.videoCodec?.height || 0) - (a.videoCodec?.height || 0))[0];
+                if (bestStream.masterUrl) return bestStream.masterUrl;
+              }
+            }
+          }
+        }
+      } catch (e) {
+        // Ignore parse error
+      }
+
       return null;
     });
 
@@ -113,6 +135,42 @@ export async function downloadWithPlaywright(url, outputPath) {
 
     logger.debug(`Best video URL: ${bestVideo.url.substring(0, 100)}...`);
 
+    // Extract caption metadata from __INITIAL_STATE__
+    const captionData = await page.evaluate(() => {
+      try {
+        const state = window.__INITIAL_STATE__;
+        if (!state?.note?.noteDetailMap) return null;
+
+        const noteMap = state.note.noteDetailMap;
+        const noteKeys = Object.keys(noteMap);
+        if (noteKeys.length === 0) return null;
+
+        const note = noteMap[noteKeys[0]]?.note;
+        if (!note) return null;
+
+        return {
+          title: note.title || '',
+          desc: note.desc || '',
+          tags: (note.tagList || []).map(t => typeof t === 'string' ? t : t.name).filter(Boolean),
+          publishTime: note.time || null,
+        };
+      } catch {
+        return null;
+      }
+    });
+
+    // Fallback: extract caption from DOM if __INITIAL_STATE__ failed
+    const caption = captionData || await page.evaluate(() => {
+      const descEl = document.querySelector('#detail-desc');
+      const metaDesc = document.querySelector('meta[name="description"]');
+      return {
+        title: document.title?.replace(/ - rednote$/, '') || '',
+        desc: descEl?.textContent?.trim() || metaDesc?.content?.trim() || '',
+        tags: [],
+        publishTime: null,
+      };
+    });
+
     // Download the video file
     const response = await fetch(bestVideo.url, {
       headers: {
@@ -129,7 +187,14 @@ export async function downloadWithPlaywright(url, outputPath) {
     await pipeline(response.body, fileStream);
 
     logger.success(`Downloaded: ${outputPath}`);
-    return outputPath;
+    if (caption?.desc) {
+      logger.info(`Caption: ${caption.desc.substring(0, 80)}...`);
+    }
+    if (caption?.tags?.length > 0) {
+      logger.info(`Tags: ${caption.tags.join(', ')}`);
+    }
+
+    return { videoPath: outputPath, caption };
 
   } finally {
     await context.close();

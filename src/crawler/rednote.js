@@ -162,10 +162,48 @@ export async function crawlChannel(channelUrl) {
 
     logger.info('Page loaded. Collecting notes...');
 
-    // Wait for initial API response to come in
+    // Wait for initial page render
     await page.waitForTimeout(3000);
 
-    // Scroll to trigger more API calls and load all notes
+    // Helper: extract notes from the current DOM state
+    const extractDomNotes = async () => {
+      return page.evaluate(() => {
+        const extracted = [];
+        const links = document.querySelectorAll('a.cover[href*="/user/profile/"]');
+        for (const link of links) {
+          const href = link.getAttribute('href');
+          const match = href.match(/\/user\/profile\/[a-f0-9]+\/([a-f0-9]{24})/);
+          if (match) {
+            const noteId = match[1];
+            const noteContainer = link.closest('.note-item, [class*="note"]');
+            const titleEl = noteContainer?.querySelector('.title, [class*="title"], [class*="desc"]');
+            const title = titleEl?.textContent?.trim() || '';
+            const hasVideo = !!noteContainer?.querySelector('.play-icon, [class*="video-icon"]');
+            const tokenMatch = href.match(/xsec_token=([^&]+)/);
+            const xsecToken = tokenMatch ? tokenMatch[1] : '';
+            const fullUrl = xsecToken 
+              ? `https://www.rednote.com/explore/${noteId}?xsec_token=${xsecToken}&xsec_source=pc_user` 
+              : `https://www.rednote.com/explore/${noteId}`;
+            extracted.push({ noteId, title, url: fullUrl, hasVideo, xsecToken });
+          }
+        }
+        return extracted;
+      });
+    };
+
+    // Step 1: Extract SSR-rendered notes from DOM FIRST (these are the newest posts
+    // that RedNote bakes into the HTML — the API interceptor never sees them)
+    const initialDomNotes = await extractDomNotes();
+    for (const note of initialDomNotes) {
+      if (!videos.has(note.noteId)) {
+        videos.set(note.noteId, note);
+      }
+    }
+    if (initialDomNotes.length > 0) {
+      logger.info(`Found ${initialDomNotes.length} initial notes from page (SSR)`);
+    }
+
+    // Step 2: Scroll to trigger API calls and load all remaining notes
     let previousCount = videos.size;
     let noNewContentCount = 0;
     const maxScrolls = config.rednote?.maxScrolls || 30;
@@ -174,6 +212,14 @@ export async function crawlChannel(channelUrl) {
     for (let i = 0; i < maxScrolls; i++) {
       await page.evaluate(() => window.scrollBy(0, window.innerHeight));
       await page.waitForTimeout(scrollDelay);
+
+      // Also pick up any new DOM nodes rendered by scrolling
+      const scrollDomNotes = await extractDomNotes();
+      for (const note of scrollDomNotes) {
+        if (!videos.has(note.noteId)) {
+          videos.set(note.noteId, note);
+        }
+      }
 
       if (videos.size === previousCount) {
         noNewContentCount++;
@@ -188,58 +234,13 @@ export async function crawlChannel(channelUrl) {
       }
     }
 
-    // If API interception didn't find anything, try DOM extraction
-    if (videos.size === 0) {
-      logger.info('No API data captured. Extracting from DOM...');
-
-      const domNotes = await page.evaluate(() => {
-        const extracted = [];
-        // Look for links that match the pattern /user/profile/<userId>/<noteId>
-        const links = document.querySelectorAll('a[href*="/user/profile/"]');
-        for (const link of links) {
-          const href = link.getAttribute('href');
-          const match = href.match(/\/user\/profile\/[a-f0-9]+\/([a-f0-9]{24})/);
-          if (match) {
-            const noteId = match[1];
-            // Get title from child element or adjacent title link
-            const noteContainer = link.closest('.note-item, [class*="note"]');
-            const titleEl = noteContainer?.querySelector('.title, [class*="title"], [class*="desc"]');
-            const title = titleEl?.textContent?.trim() || '';
-            // Check if it's a video
-            const hasVideo = !!noteContainer?.querySelector('.play-icon, [class*="video-icon"]');
-            
-            // Extract xsec_token
-            const tokenMatch = href.match(/xsec_token=([^&]+)/);
-            const xsecToken = tokenMatch ? tokenMatch[1] : '';
-            
-            const fullUrl = xsecToken 
-              ? `https://www.rednote.com/explore/${noteId}?xsec_token=${xsecToken}&xsec_source=pc_user` 
-              : `https://www.rednote.com/explore/${noteId}`;
-
-            extracted.push({
-              noteId,
-              title,
-              url: fullUrl,
-              hasVideo,
-              xsecToken
-            });
-          }
-        }
-        return extracted;
-      });
-
-      for (const note of domNotes) {
-        if (!videos.has(note.noteId)) {
-          videos.set(note.noteId, note);
-          logger.debug(`[DOM] Found: ${note.title || note.noteId}`);
-        }
-      }
-    }
-
-    // Filter and return results
+    // Filter to video notes only
     const result = Array.from(videos.values());
     const videoNotes = result.filter(n => n.hasVideo);
-    const finalList = videoNotes.length > 0 ? videoNotes : result;
+    let finalList = videoNotes.length > 0 ? videoNotes : result;
+
+    // Sort newest first by noteId (first 8 hex chars encode Unix timestamp)
+    finalList.sort((a, b) => b.noteId.localeCompare(a.noteId));
 
     if (finalList.length === 0) {
       logger.warn('No videos found in channel.');

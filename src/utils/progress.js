@@ -83,17 +83,23 @@ export function printSummary(results) {
     if (succeeded.length > 0) {
       mdContent += `## ✅ Successful Videos\n\n`;
       succeeded.forEach((r, i) => {
-        mdContent += `${i + 1}. **${r.title || r.noteId}**\n`;
-        if (r.output) mdContent += `   - Output: \`${r.output}\`\n`;
+        mdContent += `### ${i + 1}. ${r.title || 'Untitled'}\n`;
+        if (r.url) mdContent += `- **Source URL:** ${r.url}\n`;
+        if (r.caption?.desc) mdContent += `- **Caption:** ${r.caption.desc.substring(0, 200)}${r.caption.desc.length > 200 ? '...' : ''}\n`;
+        if (r.caption?.tags?.length > 0) mdContent += `- **Tags:** ${r.caption.tags.map(t => `#${t}`).join(' ')}\n`;
+        if (r.outputPath) mdContent += `- **Output Video:** \`${r.outputPath}\` (${r.sizeMB} MB)\n`;
+        if (r.transcriptPath) mdContent += `- **Subtitles (SRT):** \`${r.transcriptPath}\`\n`;
+        mdContent += `- **OCR:** ${r.skippedOcr ? 'Skipped' : 'Processed'}\n`;
+        mdContent += `- **TTS:** ${r.skippedTts ? 'Skipped' : 'Processed'}\n\n`;
       });
-      mdContent += `\n`;
     }
 
     if (failed.length > 0) {
       mdContent += `## ❌ Failed Videos\n\n`;
       failed.forEach((r, i) => {
-        mdContent += `${i + 1}. **${r.title || r.noteId}**\n`;
-        mdContent += `   - Error: \`${r.error}\`\n`;
+        mdContent += `### ${i + 1}. ${r.title || 'Untitled'}\n`;
+        if (r.url) mdContent += `- **Source URL:** ${r.url}\n`;
+        mdContent += `- **Error:** \`${r.error}\`\n\n`;
       });
     }
 

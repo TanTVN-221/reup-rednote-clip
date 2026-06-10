@@ -2,7 +2,7 @@ import { readFile, writeFile } from 'fs/promises';
 import { join } from 'path';
 import config from '../config/default.js';
 import logger from './utils/logger.js';
-import { ensureDirectories, fileExists, getDownloadPath, getTranscriptPath, getTranslatedPath, getOutputPath, getTempPath, cleanTemp, getFileSizeMB } from './utils/fileManager.js';
+import { ensureDirectories, fileExists, getDownloadPath, getTranscriptPath, getTranslatedPath, getOutputPath, getTempPath, getFileSizeMB } from './utils/fileManager.js';
 import { pipelineHeader, withSpinner } from './utils/progress.js';
 import { downloadVideo } from './downloader/index.js';
 import { transcribeVideo } from './transcriber/whisper.js';
@@ -181,6 +181,11 @@ export async function processVideo(video, options = {}) {
     logger.info(`Output caption saved: ${outputCaptionPath}`);
 
     const outputSizeMB = await getFileSizeMB(finalVideoPath);
+    
+    if (outputSizeMB === 0 || outputSizeMB === "0.00") {
+      throw new Error(`Output video is missing or 0 bytes at ${finalVideoPath}. The download or rendering process failed silently.`);
+    }
+    
     logger.success(`Output: ${finalVideoPath} (${outputSizeMB} MB)`);
 
     return {
@@ -252,6 +257,11 @@ export async function savePipelineState(channelKey, processedVideos) {
     const tA = a.publishTime || 0;
     const tB = b.publishTime || 0;
     return tA - tB;
+  });
+
+  // Assign global chronological order of video
+  sorted.forEach((entry, idx) => {
+    entry.orderOfVideo = idx + 1;
   });
 
   state[channelKey] = {

@@ -15,6 +15,35 @@ An automated, end-to-end pipeline designed to download videos from RedNote (redn
 - **Auto-Trimming**: Automatically trims intros and RedNote watermarked outros without misaligning the audio/subtitles.
 - **Subtitle Burn-in**: Highly stylized, aesthetic subtitle generation using FFmpeg ASS filters.
 
+## 🌊 Execution Flow
+
+```mermaid
+graph TD
+    A[Start Pipeline] --> B{Source Type?}
+    B -->|Channel| C[Crawl RedNote Channel]
+    B -->|URL| D[Fetch Single Video]
+    B -->|Local| E[Read Local Directory]
+    
+    C --> F
+    D --> F
+    E --> F
+    
+    F[Download Video & Metadata] --> G[Whisper AI Transcription]
+    G --> H[OCR Text Extraction]
+    H --> I[Gemini AI Translation zh -> vi]
+    I --> J[TTS Generation]
+    J --> K[FFmpeg Burn Subtitles & Audio]
+    
+    K --> L{--upload passed?}
+    L -->|Yes| M[Zernio Upload Queue]
+    M --> N{Rate Limit Hit?}
+    N -->|Yes| O[Auto-Sleep 10 Mins & Retry]
+    O --> M
+    N -->|No| P[Schedule or Publish]
+    P --> Q
+    L -->|No| Q[Save Final Video to /output]
+```
+
 ## 🛠 Prerequisites
 
 Before running this project, ensure you have the following installed on your system:
@@ -81,8 +110,14 @@ You can append these flags to the `process` command:
 - `--limit <n>`: Limits the maximum number of *new* videos to process (Channels and Local only).
 - `--force`: Ignores the pipeline state and forcefully re-processes all videos.
 - `--upload`: Automatically uploads newly processed videos (AND any previously processed videos that haven't been uploaded yet) to TikTok via Zernio in chronological order.
-- `--draft`: Used in conjunction with `--upload`. Uploads the video to TikTok as a draft instead of publishing it immediately.
+- `--draft`: Upload video as a draft in Zernito instead of publishing immediately. You can go to Zernito Dashboard to manage draft videos.
+- `--schedule <time>`: Schedule the upload for a specific time (ISO format, e.g., `2024-11-01T10:00:00Z`).
+- `--schedule-interval <minutes>`: If you have many videos to publish, Zernito might reach a limit. This schedules subsequent videos apart by this interval. (e.g. `--schedule-interval 5`).
+- `--delay <seconds>`: Delay between immediate uploads in seconds to avoid rate limits (default: 30).
 - `--debug`: Enable verbose debug logging.
+
+### 🔄 Automatic Rate Limit Handling
+When using the upload features, the script intelligently handles Zernio API rate limits ("Please wait 10m before posting again"). If a rate limit is hit, the script will **automatically pause for 10 minutes** and retry the exact video without crashing or stopping your batch queue!
 
 *Example:*
 ```bash

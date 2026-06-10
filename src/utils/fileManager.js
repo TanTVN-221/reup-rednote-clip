@@ -97,36 +97,30 @@ export function getTempPath(filename) {
 }
 
 /**
- * Clean up temp files.
+ * Clean up all temporary files (downloads, temp, transcripts, translated)
  */
-export async function cleanTemp() {
-  try {
-    const files = await readdir(config.tempDir);
-    for (const file of files) {
-      await unlink(join(config.tempDir, file));
-    }
-    logger.debug('Temp directory cleaned');
-  } catch (err) {
-    logger.debug('No temp files to clean');
-  }
-}
-
-/**
- * Clean up transcripts and translated cache files.
- */
-export async function cleanCache() {
-  const dirs = [config.transcriptsDir, config.translatedDir];
+export async function cleanAllTempFiles() {
+  const dirs = [
+    config.downloadsDir,
+    config.tempDir,
+    config.transcriptsDir,
+    config.translatedDir
+  ];
+  
   for (const dir of dirs) {
     try {
       const files = await readdir(dir);
       for (const file of files) {
-        await unlink(join(dir, file));
+        // Skip hidden files like .gitkeep or .DS_Store just in case
+        if (!file.startsWith('.')) {
+          await unlink(join(dir, file));
+        }
       }
     } catch (err) {
-      // ignore
+      // Directory might not exist or be empty, ignore
     }
   }
-  logger.debug('Cache directories cleaned');
+  logger.debug('All temporary and cache directories cleaned');
 }
 
 /**

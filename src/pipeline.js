@@ -8,6 +8,7 @@ import { downloadVideo } from './downloader/index.js';
 import { transcribeVideo } from './transcriber/whisper.js';
 import { extractTextFromVideo, mergeWithTranscript } from './ocr/extractor.js';
 import { translateSrt } from './translator/index.js';
+import { translateCaption } from './translator/gemini.js';
 import { burnSubtitles, shiftSrtTimestamps } from './video/subtitle.js';
 import { addTtsVoiceover } from './video/tts.js';
 
@@ -162,14 +163,38 @@ export async function processVideo(video, options = {}) {
       if (srtPathToUse !== translatedPath) await unlink(srtPathToUse);
     } catch { /* ignore */ }
 
-    // ── Step 7: Save output metadata & Done! ──
+    // ── Step 7: Translate Caption & Save metadata ──
     currentStep++;
     pipelineHeader(title || noteId, currentStep, TOTAL_STEPS);
+
+    let translatedTitle = title || '';
+    let translatedCaption = caption?.desc || '';
+    let translatedTags = caption?.tags || [];
+
+    if (caption) {
+      try {
+        logger.info('Translating caption and tags using Gemini AI...');
+        const translatedData = await translateCaption({
+          title: title || '',
+          desc: caption?.desc || '',
+          tags: caption?.tags || [],
+          publishTime: caption?.publishTime
+        });
+        translatedTitle = translatedData.title || translatedTitle;
+        translatedCaption = translatedData.desc || translatedCaption;
+        translatedTags = translatedData.tags || translatedTags;
+      } catch (e) {
+        logger.warn(`Failed to translate caption: ${e.message}. Using original Chinese caption.`);
+      }
+    }
 
     // Save caption metadata JSON alongside the output video for Zernio/TikTok upload
     const outputCaptionPath = join(config.outputDir, `${noteId}_caption.json`);
     const captionData = {
       noteId,
+      title: translatedTitle,
+      desc: translatedCaption,
+      tags: translatedTags,
       originalTitle: title || '',
       originalCaption: caption?.desc || '',
       originalTags: caption?.tags || [],

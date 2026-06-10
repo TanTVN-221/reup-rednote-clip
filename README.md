@@ -19,29 +19,39 @@ An automated, end-to-end pipeline designed to download videos from RedNote (redn
 
 ```mermaid
 graph TD
+    %% Input Source Selection
     A[Start Pipeline] --> B{Source Type?}
     B -->|Channel| C[Crawl RedNote Channel]
     B -->|URL| D[Fetch Single Video]
-    B -->|Local| E[Read Local Directory]
+    B -->|Local Folder| E[Read Local Directory]
     
-    C --> F
+    C --> F[Download Video & Extract Chinese Metadata]
     D --> F
     E --> F
     
-    F[Download Video & Metadata] --> G[Whisper AI Transcription]
-    G --> H[OCR Text Extraction]
-    H --> I[Gemini AI Translation zh -> vi]
-    I --> J[TTS Generation]
-    J --> K[FFmpeg Burn Subtitles & Audio]
+    %% Core Video Processing Pipeline
+    subgraph Video Processing
+        F --> G[1. Whisper AI Transcription]
+        G --> H[2. OCR Text Extraction]
+        H --> I[3. Gemini Translation: Subtitles zh ➔ vi]
+        I --> J[4. TTS Voiceover Generation]
+        J --> K[5. FFmpeg Burn Video + Audio]
+        K --> L[6. Gemini Translation: Title & Caption zh ➔ vi]
+        L --> M[7. Save Final Video & .json Metadata]
+    end
     
-    K --> L{--upload passed?}
-    L -->|Yes| M[Zernio Upload Queue]
-    M --> N{Rate Limit Hit?}
-    N -->|Yes| O[Auto-Sleep 10 Mins & Retry]
-    O --> M
-    N -->|No| P[Schedule or Publish]
-    P --> Q
-    L -->|No| Q[Save Final Video to /output]
+    %% Upload Flow
+    M --> N{Has --upload flag?}
+    
+    N -->|Yes| O[Send to Zernio API Upload Queue]
+    N -->|No| P[Done! Saved in /output folder]
+    
+    %% Zernio Sub-flow
+    O --> Q{Rate Limit Hit?}
+    Q -->|Yes| R[Auto-Sleep 10 Mins & Retry]
+    R --> O
+    Q -->|No| S[Publish or Schedule to TikTok]
+    S --> P
 ```
 
 ## 🛠 Prerequisites

@@ -206,7 +206,9 @@ program
             return {
               uploadTiktokStatus: false,
               noteId: fallbackNoteId,
-              title: r.title,
+              title: r.caption?.title || r.title,
+              desc: r.caption?.desc || '',
+              tags: r.caption?.tags || [],
               publishTime: r.caption?.publishTime || null,
               outputPath: r.outputPath || null,
               captionPath: r.captionPath || null,

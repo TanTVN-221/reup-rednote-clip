@@ -1,8 +1,8 @@
 import { readFile } from 'fs/promises';
 import { basename } from 'path';
 import config from '../../config/default.js';
+import fetch from 'node-fetch';
 import logger from '../utils/logger.js';
-import { translateCaption } from '../translator/gemini.js';
 import Zernio from '@zernio/node';
 
 /**
@@ -76,9 +76,9 @@ export async function uploadToTikTok(videoPath, rawCaptionData, uploadOptions = 
 
     logger.success(`Media uploaded successfully. Media ID: ${mediaId}`);
 
-    // ── Step 2: Translate Caption ──
-    logger.info('Translating and optimizing video caption/tags...');
-    const translatedData = await translateCaption(rawCaptionData);
+    // ── Step 2: Use Pre-translated Caption ──
+    logger.info('Using pre-translated caption/tags from pipeline...');
+    const translatedData = rawCaptionData;
 
     // ── Step 3: Create Post ──
     logger.info(`Creating TikTok post via Zernio SDK (Draft: ${isDraft})...`);
